@@ -1,0 +1,19 @@
+# Render Blueprint - https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: univr-chatbot-api
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false  # Set manually in Render dashboard
+      - key: MODEL
+        value: gemini-2.5-flash
+      - key: STORE_PREFIX
+        value: univr-chatbot
+      - key: APP_ENV
+        value: production
+      - key: DEBUG
+        value: "false"
+    healthCheckPath: /health

@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UniVR Chatbot - University of Verona AI Assistant</title>
+    <meta name="description" content="AI-powered chatbot for University of Verona students. Get instant answers about scholarships, tuition, admissions, and more.">
+    
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Styles -->
+    <link rel="stylesheet" href="/static/css/style.css">
+    
+    <!-- Favicon -->
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎓</text></svg>">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <div class="logo">
+                    <div class="logo-icon">🎓</div>
+                    <div class="logo-text">
+                        <h1>UniVR Chatbot</h1>
+                        <span class="subtitle">University of Verona AI Assistant</span>
+                    </div>
+                </div>
+                <div class="header-actions">
+                    <select id="department-select" class="department-select">
+                        <option value="">All Departments</option>
+                    </select>
+                    <button class="theme-toggle" id="theme-toggle" title="Toggle theme">
+                        <span class="theme-icon">🌙</span>
+                    </button>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Chat Area -->
+        <main class="chat-container">
+            <div class="chat-messages" id="chat-messages">
+                <!-- Welcome Message -->
+                <div class="message bot-message welcome-message">
+                    <div class="message-avatar">🤖</div>
+                    <div class="message-content">
+                        <div class="message-text">
+                            <h2>👋 Benvenuto! Welcome!</h2>
+                            <p>I'm your AI assistant for the <strong>University of Verona</strong>. I can help you with:</p>
+                            <ul>
+                                <li>📚 <strong>Scholarships</strong> - Available funding and requirements</li>
+                                <li>💰 <strong>Tuition & Fees</strong> - Costs and payment deadlines</li>
+                                <li>📝 <strong>Admissions</strong> - Application process and requirements</li>
+                                <li>🎓 <strong>Right to Education</strong> - Student support services</li>
+                                <li>🌍 <strong>International Students</strong> - Visa and exchange programs</li>
+                            </ul>
+                            <p><em>Ask me anything in English or Italian!</em></p>
+                        </div>
+                        <div class="quick-questions">
+                            <p class="quick-label">Try asking:</p>
+                            <div class="quick-buttons">
+                                <button class="quick-btn" data-question="What scholarships are available for international students?">
+                                    Scholarships for international students
+                                </button>
+                                <button class="quick-btn" data-question="What are the tuition fees for the current academic year?">
+                                    Tuition fees information
+                                </button>
+                                <button class="quick-btn" data-question="What documents do I need for admission?">
+                                    Required admission documents
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Typing Indicator -->
+            <div class="typing-indicator" id="typing-indicator">
+                <div class="message-avatar">🤖</div>
+                <div class="typing-dots">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </div>
+            </div>
+        </main>
+
+        <!-- Input Area -->
+        <footer class="input-container">
+            <form id="chat-form" class="chat-form">
+                <div class="input-wrapper">
+                    <textarea 
+                        id="message-input" 
+                        class="message-input" 
+                        placeholder="Ask about scholarships, tuition, admissions..."
+                        rows="1"
+                        maxlength="2000"
+                    ></textarea>
+                    <button type="submit" class="send-button" id="send-button" title="Send message">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="24" height="24">
+                            <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
+                        </svg>
+                    </button>
+                </div>
+                <div class="input-footer">
+                    <span class="char-count"><span id="char-count">0</span>/2000</span>
+                    <span class="powered-by">Powered by <strong>Gemini AI</strong> with RAG</span>
+                </div>
+            </form>
+        </footer>
+    </div>
+
+    <!-- Store Status Modal -->
+    <div class="modal" id="status-modal">
+        <div class="modal-content">
+            <h3>📊 System Status</h3>
+            <div id="status-content">
+                <p>Loading...</p>
+            </div>
+            <button class="modal-close" onclick="closeModal()">Close</button>
+        </div>
+    </div>
+
+    <script src="/static/js/chat.js"></script>
+</body>
+</html>
