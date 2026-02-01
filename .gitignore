@@ -1,1 +1,5 @@
+# Local env files (never commit - Google Cloud / secrets)
+.env
+.env.local
+.env*.local
 .env/
