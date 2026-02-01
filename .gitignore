@@ -3,3 +3,16 @@
 .env.local
 .env*.local
 .env/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+
+# LaTeX build artifacts (keep .tex, .pdf)
+*.aux
+*.log
+*.out
+*.toc

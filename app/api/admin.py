@@ -7,9 +7,10 @@ Manage File Search Stores (domains) and documents.
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
 from pydantic import BaseModel
 
+from app.api.auth import require_admin
 from app.config import ULSS9_STORES
 from app.services.extra_stores import set_extra_description
 from app.services.store_manager import StoreManager, StoreInfo
@@ -59,7 +60,7 @@ class DocumentInfo(BaseModel):
 # ============ Store Management ============
 
 @router.post("/stores", response_model=CreateStoreResponse)
-async def create_store(request: CreateStoreRequest):
+async def create_store(request: CreateStoreRequest, _: str = Depends(require_admin)):
     """
     Create a new File Search Store (category) for RAG.
     Use for stores beyond the four initial areas (Allegato A).
@@ -82,7 +83,7 @@ async def create_store(request: CreateStoreRequest):
 
 
 @router.get("/stores", response_model=list[StoreInfo])
-async def list_stores():
+async def list_stores(_: str = Depends(require_admin)):
     """List all available stores/domains."""
     try:
         store_manager = StoreManager()
@@ -94,7 +95,7 @@ async def list_stores():
 
 
 @router.delete("/stores/{domain}")
-async def delete_store(domain: str):
+async def delete_store(domain: str, _: str = Depends(require_admin)):
     """Delete a store and all its documents."""
     try:
         store_manager = StoreManager()
@@ -112,7 +113,7 @@ async def delete_store(domain: str):
 
 
 @router.post("/stores/delete-all")
-async def delete_all_stores():
+async def delete_all_stores(_: str = Depends(require_admin)):
     """
     Delete all File Search Stores (with the app's STORE_PREFIX) from Gemini.
     Use this to clear everything before creating the 4 ULSS 9 stores.
@@ -140,7 +141,7 @@ async def delete_all_stores():
 
 
 @router.post("/stores/ulss9/create-all")
-async def create_all_ulss9_stores():
+async def create_all_ulss9_stores(_: str = Depends(require_admin)):
     """Create the four initial stores from Allegato A (idempotent). Others can be added via POST /stores."""
     try:
         store_manager = StoreManager()
@@ -161,7 +162,8 @@ async def create_all_ulss9_stores():
 @router.post("/stores/{domain}/upload", response_model=UploadResponse)
 async def upload_document(
     domain: str,
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    _: str = Depends(require_admin),
 ):
     """
     Upload a document to a domain's File Search Store.
@@ -221,7 +223,7 @@ async def list_documents(domain: str):
 
 
 @router.delete("/stores/{domain}/documents/{doc_name:path}")
-async def delete_document(domain: str, doc_name: str):
+async def delete_document(domain: str, doc_name: str, _: str = Depends(require_admin)):
     """Delete a document from a domain's store."""
     try:
         store_manager = StoreManager()

@@ -43,6 +43,16 @@ ALLOW_ENGLISH = os.getenv("ALLOW_ENGLISH", "false").lower() == "true"
 APP_ENV = os.getenv("APP_ENV", "development")
 DEBUG = os.getenv("DEBUG", "false").lower() == "true"
 
+# Admin auth (login only, no registration)
+# Username and bcrypt hash of password – never store plain password in code or env
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "tesfayh")
+# Bcrypt hash for the admin password (set via ADMIN_PASSWORD_HASH in .env for production)
+_ADMIN_PASSWORD_BCRYPT_DEFAULT = "$2b$12$.YJ0hgIed8xguHsTibWU6OeL1VhT7zamTFTeGcrWj1tSGlMhwTxC2"
+ADMIN_PASSWORD_HASH = os.getenv("ADMIN_PASSWORD_HASH", _ADMIN_PASSWORD_BCRYPT_DEFAULT)
+JWT_SECRET = os.getenv("JWT_SECRET", "change-me-in-production")
+JWT_ALGORITHM = "HS256"
+JWT_EXPIRE_HOURS = 24
+
 # Validation - warn if API key is missing
 if not GEMINI_API_KEY:
     print("⚠️  WARNING: GEMINI_API_KEY not set!")

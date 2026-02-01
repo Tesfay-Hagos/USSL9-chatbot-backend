@@ -12,7 +12,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from app.api import chat, admin
+from app.api import admin, auth, chat
 from app.config import APP_ENV, DEBUG, GEMINI_API_KEY
 
 # Configure logging
@@ -66,6 +66,7 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 # Include API routers
+app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(chat.router, prefix="/api", tags=["chat"])
 app.include_router(admin.router, prefix="/api/admin", tags=["admin"])
 
