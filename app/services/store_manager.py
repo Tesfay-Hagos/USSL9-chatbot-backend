@@ -5,11 +5,10 @@ Handles creation, management, and document uploads for Gemini File Search Stores
 Each store represents a RAG domain (e.g., scholarships, admissions).
 """
 
+import asyncio
 import logging
-import time
 import uuid
 from pathlib import Path
-from typing import Optional
 
 from google import genai
 from google.genai import types
@@ -40,7 +39,7 @@ class StoreManager:
     Manages Gemini File Search Stores for the University chatbot.
     Each store represents a RAG domain.
     """
-    
+
     def __init__(self):
         """Initialize the store manager."""
         self.client = None
@@ -50,23 +49,23 @@ class StoreManager:
                 logger.debug("StoreManager: Gemini client initialized")
             except Exception as e:
                 logger.error(f"StoreManager: Failed to initialize Gemini client: {e}", exc_info=True)
-    
+
     def _get_store_display_name(self, domain: str) -> str:
         """Generate store display name from domain."""
         return f"{STORE_PREFIX}-{domain}"
-    
-    def _extract_domain_from_display_name(self, display_name: str) -> Optional[str]:
+
+    def _extract_domain_from_display_name(self, display_name: str) -> str | None:
         """Extract domain from store display name."""
         prefix = f"{STORE_PREFIX}-"
         if display_name.startswith(prefix):
             return display_name[len(prefix):]
         return None
-    
+
     def get_store(self, domain: str) -> types.FileSearchStore | None:
-        """Retrieve a store by domain name."""
+        """Retrieve a store by domain name by listing all stores (fallback only)."""
         if not self.client:
             return None
-        
+
         display_name = self._get_store_display_name(domain)
         try:
             for store in self.client.file_search_stores.list():
@@ -75,7 +74,43 @@ class StoreManager:
         except Exception as e:
             logger.error(f"Error finding store: {e}")
         return None
-    
+
+    async def resolve_store(self, domain: str) -> types.FileSearchStore | None:
+        """
+        Resolve a store by domain using DB as single source of truth.
+
+        1. Fast path: direct Gemini lookup using gemini_store_name from DB
+        2. Discovery fallback: list all Gemini stores, match by display_name, update DB
+        3. Returns None if not found (caller decides whether to auto-create)
+        """
+        if not self.client:
+            return None
+
+        # 1. Fast path — use cached Gemini resource name from DB
+        from app.services import store_registry  # local import to avoid circular
+        db_record = await store_registry.get_store(domain)
+        if db_record and db_record.gemini_store_name:
+            try:
+                store = self.client.file_search_stores.get(
+                    name=db_record.gemini_store_name
+                )
+                return store
+            except Exception:
+                logger.warning(
+                    f"Cached gemini_store_name '{db_record.gemini_store_name}' "
+                    f"for domain '{domain}' is stale — falling back to discovery"
+                )
+
+        # 2. Discovery fallback — list all stores and match by display_name
+        store = self.get_store(domain)
+        if store:
+            try:
+                await store_registry.update_gemini_name(domain, store.name)
+                logger.info(f"Updated DB gemini_store_name for domain '{domain}': {store.name}")
+            except Exception as e:
+                logger.warning(f"Could not update gemini_store_name in DB for '{domain}': {e}")
+        return store
+
     async def create_store(self, domain: str, description: str = "") -> types.FileSearchStore:
         """
         Create a new File Search Store for a domain.
@@ -85,40 +120,40 @@ class StoreManager:
             description: Optional description for the domain
             
         Returns:
-            The created or existing store
+            The created or exSTORE_PREFIXisting store
         """
         if not self.client:
             raise ValueError("Gemini client not initialized. Check API key.")
-        
+
         display_name = self._get_store_display_name(domain)
-        
+
         # Check if store already exists
         existing = self.get_store(domain)
         if existing:
             logger.info(f"Store '{display_name}' already exists")
             return existing
-        
+
         # Create new store
         store = self.client.file_search_stores.create(
             config={"display_name": display_name}
         )
         logger.info(f"Created new store: {store.name} for domain '{domain}'")
         return store
-    
+
     async def list_stores(self) -> list[StoreInfo]:
         """List all domain stores."""
         if not self.client:
             return []
-        
+
         stores = []
         prefix = f"{STORE_PREFIX}-"
-        
+
         try:
             for store in self.client.file_search_stores.list():
                 # Only include stores with our prefix
                 if store.display_name and store.display_name.startswith(prefix):
                     domain = self._extract_domain_from_display_name(store.display_name)
-                    
+
                     # Count documents
                     doc_count = 0
                     try:
@@ -126,7 +161,7 @@ class StoreManager:
                         doc_count = len(docs)
                     except Exception:
                         pass
-                    
+
                     stores.append(StoreInfo(
                         name=store.name,
                         display_name=store.display_name,
@@ -135,18 +170,18 @@ class StoreManager:
                     ))
         except Exception as e:
             logger.error(f"Error listing stores: {e}")
-        
+
         return stores
-    
+
     async def delete_store(self, domain: str) -> bool:
         """Delete a store by domain."""
         if not self.client:
             return False
-        
-        store = self.get_store(domain)
+
+        store = await self.resolve_store(domain)
         if not store:
             return False
-        
+
         try:
             self.client.file_search_stores.delete(name=store.name, config={"force": True})
             logger.info(f"Deleted store for domain '{domain}'")
@@ -154,16 +189,16 @@ class StoreManager:
         except Exception as e:
             logger.error(f"Error deleting store: {e}")
             return False
-    
+
     async def upload_document(
         self,
         file_path: str,
         domain: str,
         *,
         source_type: str = "attachment",
-        title_override: Optional[str] = None,
-        url: Optional[str] = None,
-        document_id: Optional[str] = None,
+        title_override: str | None = None,
+        url: str | None = None,
+        document_id: str | None = None,
     ) -> dict:
         """
         Upload a document to a domain's File Search Store.
@@ -183,9 +218,17 @@ class StoreManager:
         if not self.client:
             raise ValueError("Gemini client not initialized. Check API key.")
 
-        store = self.get_store(domain)
+        store = await self.resolve_store(domain)
         if not store:
-            raise ValueError(f"Store for domain '{domain}' not found. Create it first.")
+            # Only auto-create if the domain is registered in DB (seeded or created via admin)
+            # If not in DB, the domain is invalid — reject it rather than silently create
+            from app.services import store_registry
+            db_record = await store_registry.get_store(domain)
+            if not db_record:
+                raise ValueError(f"Unknown store domain '{domain}'. Register it via the admin panel first.")
+            logger.warning(f"Store for domain '{domain}' missing from Gemini — auto-creating")
+            store = await self.create_store(domain, db_record.description)
+            await store_registry.update_gemini_name(domain, store.name)
 
         file_name = Path(file_path).name
         if source_type == "attachment" and not document_id:
@@ -197,7 +240,7 @@ class StoreManager:
 
         # Wait for file to be ready
         while temp_file.state.name == "PROCESSING":
-            time.sleep(2)
+            await asyncio.sleep(2)
             temp_file = self.client.files.get(name=temp_file.name)
 
         if temp_file.state.name != "ACTIVE":
@@ -233,9 +276,8 @@ class StoreManager:
             },
         )
 
-        # Wait for indexing to complete
         while not operation.done:
-            time.sleep(3)
+            await asyncio.sleep(3)
             operation = self.client.operations.get(operation)
 
         logger.info(f"Document '{file_name}' uploaded and indexed to domain '{domain}' (source_type={source_type})")
@@ -252,11 +294,11 @@ class StoreManager:
         if url:
             result["url"] = url
         return result
-    
+
     async def _extract_metadata(self, temp_file, domain: str) -> DocumentMetadata:
         """Extract metadata from a document using Gemini."""
         logger.info("Extracting metadata...")
-        
+
         response = self.client.models.generate_content(
             model=MODEL,
             contents=[
@@ -273,19 +315,19 @@ class StoreManager:
                 "response_schema": DocumentMetadata,
             },
         )
-        
+
         metadata = response.parsed
         metadata.department = domain
-        
+
         logger.info(f"Extracted - Title: {metadata.title}")
         return metadata
-    
+
     async def _delete_existing(self, store, file_name: str):
         """Delete existing document with the same name (replace duplicate)."""
         try:
             for doc in self.client.file_search_stores.documents.list(parent=store.name):
                 should_delete = False
-                
+
                 if doc.display_name == file_name:
                     should_delete = True
                 elif doc.custom_metadata:
@@ -293,26 +335,26 @@ class StoreManager:
                         if meta.key == "file_name" and meta.string_value == file_name:
                             should_delete = True
                             break
-                
+
                 if should_delete:
                     logger.info(f"Replacing existing document: {doc.display_name}")
                     self.client.file_search_stores.documents.delete(
-                        name=doc.name, 
+                        name=doc.name,
                         config={"force": True}
                     )
-                    time.sleep(2)
+                    await asyncio.sleep(2)
         except Exception as e:
             logger.warning(f"Error checking for existing docs: {e}")
-    
+
     async def list_documents(self, domain: str) -> list[dict]:
         """List all documents in a domain's store."""
         if not self.client:
             return []
-        
-        store = self.get_store(domain)
+
+        store = await self.resolve_store(domain)
         if not store:
             return []
-        
+
         documents = []
         try:
             for doc in self.client.file_search_stores.documents.list(parent=store.name):
@@ -320,7 +362,7 @@ class StoreManager:
                 if doc.custom_metadata:
                     for meta in doc.custom_metadata:
                         metadata[meta.key] = meta.string_value
-                
+
                 documents.append({
                     "name": doc.name,
                     "display_name": doc.display_name,
@@ -328,18 +370,18 @@ class StoreManager:
                 })
         except Exception as e:
             logger.error(f"Error listing documents: {e}")
-        
+
         return documents
-    
+
     async def delete_document(self, domain: str, doc_name: str) -> bool:
         """Delete a document from a domain's store."""
         if not self.client:
             return False
-        
-        store = self.get_store(domain)
+
+        store = await self.resolve_store(domain)
         if not store:
             return False
-        
+
         try:
             self.client.file_search_stores.documents.delete(
                 name=doc_name,

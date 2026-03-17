@@ -1,0 +1,65 @@
+# Docker Compose for local development and production deployment
+# European Government / Enterprise deployment with PostgreSQL
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: ulss9-postgres
+    environment:
+      POSTGRES_DB: ulss9_chatbot
+      POSTGRES_USER: ulss9
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ulss9-local-dev}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ulss9 -d ulss9_chatbot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ulss9-chatbot:latest
+    container_name: ulss9-chatbot
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      - APP_ENV=production
+      - ENVIRONMENT=production
+      - LOG_FORMAT=json
+      - LOG_LEVEL=INFO
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-*}
+      - RATE_LIMIT_REQUESTS=${RATE_LIMIT_REQUESTS:-60}
+      - AUDIT_LOG_ENABLED=${AUDIT_LOG_ENABLED:-true}
+      - TRUST_PROXY=${TRUST_PROXY:-true}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - JWT_SECRET=${JWT_SECRET}
+      - WIDGET_SECRET=${WIDGET_SECRET}
+      - ADMIN_SEED_EMAIL=${ADMIN_SEED_EMAIL:-admin@aulss9.veneto.it}
+      - ADMIN_SEED_PASSWORD=${ADMIN_SEED_PASSWORD:-ChangeMe@FirstLogin!}
+      - ADMIN_EMAIL=${ADMIN_EMAIL}
+      - DATABASE_URL=postgresql://ulss9:${POSTGRES_PASSWORD:-ulss9-local-dev}@db:5432/ulss9_chatbot
+      - IP_HASH_SALT=${IP_HASH_SALT:-change-me}
+      - BREVO_API_KEY=${BREVO_API_KEY:-}
+    volumes:
+      - ./data:/app/data
+      - audit_logs:/app/logs
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  audit_logs:

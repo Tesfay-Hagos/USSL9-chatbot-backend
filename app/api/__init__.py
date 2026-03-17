@@ -1,3 +1,3 @@
 """
-UniVR Chatbot - API Module
+ULSS 9 Scaligera Chatbot - API Module
 """

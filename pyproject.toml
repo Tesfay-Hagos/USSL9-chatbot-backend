@@ -1,7 +1,7 @@
 [project]
-name = "univr-chatbot"
-version = "0.1.0"
-description = "RAG-based chatbot for University of Verona announcements, scholarships, and student services"
+name = "ulss9-chatbot"
+version = "2.2.0"
+description = "RAG-based healthcare information assistant for Azienda ULSS 9 Scaligera"
 authors = [
     {name = "UniVR Student Services"},
 ]
@@ -16,6 +16,13 @@ dependencies = [
     "httpx",
     "bcrypt>=5.0.0",
     "pyjwt>=2.11.0",
+    "slowapi>=0.1.9",
+    "sqlalchemy>=2.0.0",
+    "asyncpg>=0.29.0",
+    "alembic>=1.13.0",
+    "psycopg2-binary>=2.9.0",
+    "aiosqlite>=0.20.0",
+    "prometheus-client>=0.20.0",
 ]
 requires-python = ">=3.12"
 
