@@ -6,6 +6,7 @@ Uses SQLAlchemy 2.0 async engine with asyncpg or aiosqlite.
 """
 
 import logging
+import re
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -22,8 +23,16 @@ logger = logging.getLogger(__name__)
 
 # Convert sync URL to async driver
 _db_url = DATABASE_URL
+_connect_args: dict = {}
+
 if _db_url.startswith("postgresql://"):
     _db_url = _db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    # asyncpg does not accept sslmode/channel_binding as URL params — strip them
+    # and pass ssl=True via connect_args instead
+    if "sslmode=" in _db_url or "channel_binding=" in _db_url:
+        _db_url = re.sub(r"[?&](sslmode|channel_binding)=[^&]*", "", _db_url)
+        _db_url = _db_url.rstrip("?&")
+        _connect_args = {"ssl": True}
 elif _db_url.startswith("sqlite:///"):
     _db_url = _db_url.replace("sqlite:///", "sqlite+aiosqlite:///", 1)
 
@@ -31,6 +40,7 @@ engine = create_async_engine(
     _db_url,
     echo=False,
     pool_pre_ping=True,
+    connect_args=_connect_args,
 )
 
 async_session_factory = async_sessionmaker(
