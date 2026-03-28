@@ -148,7 +148,7 @@ app.add_route("/metrics", metrics_endpoint, methods=["GET"])
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
     """Serve the main chat interface."""
-    return templates.TemplateResponse("index.html", {"request": request})
+    return templates.TemplateResponse(request, "index.html")
 
 
 @app.get(HEALTH_CHECK_PATH)
