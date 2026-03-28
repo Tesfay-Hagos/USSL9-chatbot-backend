@@ -10,6 +10,7 @@ import re
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
+import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -51,10 +52,10 @@ async_session_factory = async_sessionmaker(
 
 
 async def init_db() -> None:
-    """Create all tables if they don't exist. Called once at startup."""
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    logger.info("Database tables initialised", extra={"url": DATABASE_URL.split("@")[-1] if "@" in DATABASE_URL else DATABASE_URL})
+    """Verify database connectivity. Schema is managed by Alembic migrations."""
+    async with engine.connect() as conn:
+        await conn.execute(sa.text("SELECT 1"))
+    logger.info("Database connected", extra={"url": DATABASE_URL.split("@")[-1] if "@" in DATABASE_URL else DATABASE_URL})
 
 
 async def close_db() -> None:
