@@ -241,6 +241,7 @@ class UniVRAgent:
         store_ids: list[str] | None = None,
         language: str | None = None,
         caller: str = "public",
+        history: list[dict] | None = None,
     ) -> dict:
         """
         Send a message and get a response from the agent.
@@ -252,6 +253,7 @@ class UniVRAgent:
             language: Optional "it" or "en"; response language (default Italian)
             caller: 'public' (unauthenticated widget) or 'admin' (authenticated admin panel).
                     Controls whether HIPAA/confidentiality guardrails are applied.
+            history: Optional prior conversation turns as [{"role": "user"/"model", "content": "..."}]
 
         Returns:
             dict with 'response', 'sources', 'links', 'stores_used'
@@ -279,9 +281,22 @@ class UniVRAgent:
                 system_instruction=self._system_instruction(lang, caller=caller),
             )
 
+            # Build Gemini-format history from prior turns
+            gemini_history = None
+            if history:
+                gemini_history = [
+                    types.Content(
+                        role=entry["role"],
+                        parts=[types.Part(text=entry["content"])],
+                    )
+                    for entry in history
+                    if entry.get("role") in ("user", "model") and entry.get("content")
+                ]
+
             chat_session = self.client.chats.create(
                 model=MODEL,
                 config=config,
+                history=gemini_history,
             )
 
             logger.info(

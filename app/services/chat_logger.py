@@ -10,7 +10,7 @@ import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, and_
 
 from app.config import CHAT_LOG_ANONYMISE, LOG_RETENTION_DAYS
 from app.core.audit import _hash_ip
@@ -20,8 +20,42 @@ from app.core.models import ChatLogRecord
 logger = logging.getLogger(__name__)
 
 
+async def get_conversation_history(
+    conversation_id: str,
+    limit: int = 10,
+) -> list[dict]:
+    """
+    Return the last `limit` turns for a conversation as a list of
+    [{"role": "user", "content": "..."}, {"role": "model", "content": "..."}, ...]
+    ordered oldest → newest, ready to pass to the Gemini chat session.
+    """
+    async with get_db() as db:
+        stmt = (
+            select(ChatLogRecord)
+            .where(
+                and_(
+                    ChatLogRecord.conversation_id == conversation_id,
+                    ChatLogRecord.message_text.isnot(None),
+                    ChatLogRecord.response_text.isnot(None),
+                )
+            )
+            .order_by(ChatLogRecord.created_at.desc())
+            .limit(limit)
+        )
+        result = await db.execute(stmt)
+        rows = list(result.scalars().all())
+
+    # Reverse to chronological order and build alternating user/model turns
+    history: list[dict] = []
+    for row in reversed(rows):
+        history.append({"role": "user", "content": row.message_text})
+        history.append({"role": "model", "content": row.response_text})
+    return history
+
+
 async def log_chat(
     ip: str | None = None,
+    conversation_id: str | None = None,
     domain: str | None = None,
     stores_used: list[str] | None = None,
     language: str = "it",
@@ -43,6 +77,7 @@ async def log_chat(
             record = ChatLogRecord(
                 id=uuid.uuid4().hex,
                 ip_hash=_hash_ip(ip) if CHAT_LOG_ANONYMISE and ip else ip,
+                conversation_id=conversation_id,
                 domain=domain,
                 stores_used=json.dumps(stores_used) if stores_used else None,
                 language=language,

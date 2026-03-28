@@ -15,9 +15,9 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from app.agents.univr_agent import UniVRAgent
-from app.config import JWT_ALGORITHM, JWT_SECRET, ULSS9_STORES
+from app.config import JWT_ALGORITHM, JWT_SECRET, ULSS9_STORES, CONVERSATION_HISTORY_LIMIT
 from app.core.utils import get_client_ip
-from app.services.chat_logger import log_chat
+from app.services.chat_logger import get_conversation_history, log_chat
 from app.services.store_manager import StoreManager
 from app.services.store_registry import list_stores as db_list_stores
 from app.services.store_selector import select_stores_for_query
@@ -51,12 +51,19 @@ def _resolve_caller(request: Request) -> str:
 SUPPORTED_LANGUAGES = ['it', 'en', 'fr', 'pt', 'ro', 'es', 'sq', 'ar', 'uk', 'de']
 
 
+class HistoryEntry(BaseModel):
+    """A single turn in the conversation history."""
+    role: str = Field(description="'user' or 'model'")
+    content: str = Field(max_length=4000)
+
+
 class ChatRequest(BaseModel):
     """Chat request schema with input validation."""
     message: str = Field(min_length=1, max_length=2000, description="User message")
     domain: str | None = Field(None, max_length=100, pattern=r"^[a-z0-9_-]+$", description="Store domain")
     conversation_id: str | None = Field(None, max_length=100, description="Conversation identifier")
     language: str | None = Field(None, max_length=5, description="Language code (it, en, fr, etc.)")
+    history: list[HistoryEntry] = Field(default=[], max_length=20, description="Previous conversation turns")
 
 
 class ChatResponse(BaseModel):
@@ -101,6 +108,14 @@ async def chat(request: ChatRequest, raw_request: Request):
         caller = _resolve_caller(raw_request)
         logger.info("Chat caller type: %s", caller)
 
+        # Fetch conversation history if conversation_id provided
+        history: list[dict] = []
+        if request.conversation_id:
+            try:
+                history = await get_conversation_history(request.conversation_id, CONVERSATION_HISTORY_LIMIT)
+            except Exception as e:
+                logger.warning(f"Failed to fetch conversation history: {e}")
+
         if request.domain:
             # ── Single store RAG ──
             result = await agent.chat(
@@ -108,6 +123,7 @@ async def chat(request: ChatRequest, raw_request: Request):
                 domain=request.domain,
                 language=lang,
                 caller=caller,
+                history=history or None,
             )
         else:
             # ── Step 2b: Multi-store RAG (store selection → RAG) ──
@@ -136,6 +152,7 @@ async def chat(request: ChatRequest, raw_request: Request):
                 store_ids=selected_ids,
                 language=lang,
                 caller=caller,
+                history=history or None,
             )
 
         if "demo mode" in result.get("response", "").lower() or "⚠️" in result.get("response", ""):
@@ -158,6 +175,7 @@ async def chat(request: ChatRequest, raw_request: Request):
             response_text = result.get("response", "")
             await log_chat(
                 ip=get_client_ip(raw_request),
+                conversation_id=request.conversation_id,
                 domain=request.domain,
                 stores_used=result.get("stores_used", []),
                 language=lang,

@@ -105,6 +105,7 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/ulss9.db")
 
 # Chat log retention (GDPR)
 LOG_RETENTION_DAYS = int(os.getenv("LOG_RETENTION_DAYS", "30"))
+CONVERSATION_HISTORY_LIMIT = int(os.getenv("CONVERSATION_HISTORY_LIMIT", "10"))
 CHAT_LOG_ANONYMISE = _env_bool("CHAT_LOG_ANONYMISE", True)
 
 # =============================================================================

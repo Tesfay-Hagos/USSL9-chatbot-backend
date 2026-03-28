@@ -949,6 +949,103 @@ async def sync_carta_servizi(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/stores/{domain}/sync-api-bulk")
+async def sync_carta_servizi_bulk(
+    domain: str,
+    request: Request,
+    username: str = Depends(require_admin),
+):
+    """
+    Bulk sync: fetches elenco_servizi to discover all carta IDs, then fetches and
+    indexes each carta individually via servizi_carta. This captures the rich HTML
+    content (descrizione, come accedere, ubicazione, etc.) rather than the flat list.
+    """
+    import asyncio
+    import re
+
+    import httpx
+
+    try:
+        token = await _get_carta_servizi_token()
+
+        # Step 1 — get the full service list to extract unique carta (idpadre) values
+        elenco_url = _build_carta_url("elenco_servizi", None)
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(elenco_url, headers={"Authorization": f"Bearer {token}"})
+            resp.raise_for_status()
+
+        elenco = resp.json()
+        carta_ids: set[str] = set()
+
+        if isinstance(elenco, dict) and "columns" in elenco and "data" in elenco:
+            cols = elenco["columns"]
+            rows = elenco["data"]
+            try:
+                idx_idpadre = cols.index("idpadre")
+            except ValueError:
+                raise HTTPException(status_code=422, detail="elenco_servizi missing 'idpadre' column")
+            for row in rows:
+                val = row[idx_idpadre]
+                if val is not None and str(val).strip():
+                    carta_ids.add(str(val))
+
+        if not carta_ids:
+            raise HTTPException(status_code=422, detail="No carta IDs found in elenco_servizi response")
+
+        # Step 2 — fetch and index each carta individually
+        store_manager = StoreManager()
+        synced: list[dict] = []
+        failed: list[dict] = []
+
+        for carta_id in sorted(carta_ids):
+            try:
+                carta_url = _build_carta_url("servizi_carta", carta_id)
+                async with httpx.AsyncClient(timeout=30) as client:
+                    r = await client.get(carta_url, headers={"Authorization": f"Bearer {token}"})
+                    r.raise_for_status()
+
+                data = r.json()
+                title, markdown_content = _servizi_to_markdown(data, "servizi_carta", carta_id)
+
+                safe_name = re.sub(r"[^a-z0-9_-]", "_", title.lower())[:50].strip("_")
+                filename = f"carta_{carta_id}_{safe_name}.md"
+                file_path = DATA_DIR / filename
+                file_path.write_text(markdown_content, encoding="utf-8")
+
+                result = await store_manager.upload_document(
+                    str(file_path), domain, source_type="api", title_override=title, url=carta_url
+                )
+                synced.append({"carta_id": carta_id, "title": title, "document_id": result.get("document_id")})
+                logger.info(f"CartaServizi bulk: synced carta {carta_id} — {title}")
+            except Exception as e:
+                failed.append({"carta_id": carta_id, "error": str(e)})
+                logger.warning(f"CartaServizi bulk: carta {carta_id} failed — {e}")
+
+            # Polite delay between requests
+            await asyncio.sleep(0.25)
+
+        log_admin_action(
+            username, "sync_carta_servizi_bulk", resource=domain,
+            details={"total": len(carta_ids), "synced": len(synced), "failed": len(failed)},
+            ip=get_client_ip(request), correlation_id=getattr(request.state, "correlation_id", None),
+        )
+        return {
+            "success": True,
+            "domain": domain,
+            "total_cartas": len(carta_ids),
+            "synced": len(synced),
+            "failed": len(failed),
+            "details": synced,
+            "errors": failed,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"CartaServizi bulk sync error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/stores/{domain}/documents/stats", response_model=DocumentStats)
 async def get_document_stats(domain: str, username: str = Depends(require_admin)):
     """

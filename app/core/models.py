@@ -132,6 +132,7 @@ class ChatLogRecord(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     ip_hash: Mapped[str | None] = mapped_column(String(16))
+    conversation_id: Mapped[str | None] = mapped_column(String(100), index=True)
     domain: Mapped[str | None] = mapped_column(String(100))
     stores_used: Mapped[str | None] = mapped_column(Text)  # JSON array
     language: Mapped[str] = mapped_column(String(5), default="it")
