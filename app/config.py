@@ -28,14 +28,10 @@ def _env_list(key: str, default: str = "") -> list[str]:
 # =============================================================================
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 MODEL = os.getenv("MODEL", "gemini-2.5-flash")
-STORE_PREFIX = os.getenv("STORE_PREFIX", "ulss9")
 
-# ULSS 9 initial store registry (Allegato A – quattro aree obbligatorie).
+# ULSS 9 public store — single general-purpose knowledge base.
 ULSS9_STORES = [
-    {"id": "general_info", "description": "Informazioni generali sull'Azienda ULSS 9 Scaligera: chi siamo, come accedere ai servizi, numeri utili, modulistica, cosa fare per..."},
-    {"id": "hours", "description": "Informazioni relative agli orari: ambulatori, punti prelievo, reparti, guardie mediche, farmacie, orari di visita."},
-    {"id": "locations", "description": "Informazioni relative alle sedi: indirizzi, come raggiungere ospedali, distretti, CSP, sedi vaccinali, mappe."},
-    {"id": "services", "description": "Informazioni relative ai servizi offerti presso le sedi: esami di laboratorio, visite specialistiche, screening, assistenza domiciliare, ambulatori."},
+    {"id": "general", "display_name": "General", "description": "Informazioni generali ULSS 9 Scaligera: servizi, orari, sedi, accesso alle cure, modulistica e assistenza ai cittadini."},
 ]
 
 ALLOW_ENGLISH = _env_bool("ALLOW_ENGLISH", False)
@@ -110,6 +106,14 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/ulss9.db")
 # Chat log retention (GDPR)
 LOG_RETENTION_DAYS = int(os.getenv("LOG_RETENTION_DAYS", "30"))
 CHAT_LOG_ANONYMISE = _env_bool("CHAT_LOG_ANONYMISE", True)
+
+# =============================================================================
+# CartaServizi API (external database integration)
+# =============================================================================
+CARTA_SERVIZI_URL = os.getenv("CARTA_SERVIZI_URL", "")
+CARTA_SERVIZI_COGNITO_DOMAIN = os.getenv("CARTA_SERVIZI_COGNITO_DOMAIN", "")
+CARTA_SERVIZI_CLIENT_ID = os.getenv("CARTA_SERVIZI_CLIENT_ID", "")
+CARTA_SERVIZI_CLIENT_SECRET = os.getenv("CARTA_SERVIZI_CLIENT_SECRET", "")
 
 # =============================================================================
 # Request Limits

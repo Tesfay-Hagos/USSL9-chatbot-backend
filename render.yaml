@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: ulss9-chatbot-backend
+    runtime: python
+    region: oregon
+    plan: free
+    buildCommand: pip install .
+    startCommand: alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: DATABASE_URL
+        value: postgresql://neondb_owner:npg_iSt7P2nWvkAE@ep-fancy-pond-anezaxu9-pooler.c-6.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require
+      - key: APP_ENV
+        value: production
+      - key: ENVIRONMENT
+        value: production
+      - key: LOG_FORMAT
+        value: json
+      - key: LOG_LEVEL
+        value: INFO
+      - key: DEBUG
+        value: false

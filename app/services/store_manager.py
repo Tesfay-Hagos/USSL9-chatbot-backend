@@ -7,6 +7,7 @@ Each store represents a RAG domain (e.g., scholarships, admissions).
 
 import asyncio
 import logging
+import time
 import uuid
 from pathlib import Path
 
@@ -14,9 +15,15 @@ from google import genai
 from google.genai import types
 from pydantic import BaseModel
 
-from app.config import GEMINI_API_KEY, MODEL, STORE_PREFIX
+from app.config import GEMINI_API_KEY, MODEL
 
 logger = logging.getLogger(__name__)
+
+# ── Document list cache ────────────────────────────────────────────────────────
+# Keyed by domain. Value is (fetched_at_monotonic, docs_list).
+# TTL: 60s — invalidated immediately on upload/delete so it never shows stale data.
+_DOC_CACHE: dict[str, tuple[float, list[dict]]] = {}
+_DOC_CACHE_TTL = 60
 
 
 class DocumentMetadata(BaseModel):
@@ -50,26 +57,14 @@ class StoreManager:
             except Exception as e:
                 logger.error(f"StoreManager: Failed to initialize Gemini client: {e}", exc_info=True)
 
-    def _get_store_display_name(self, domain: str) -> str:
-        """Generate store display name from domain."""
-        return f"{STORE_PREFIX}-{domain}"
-
-    def _extract_domain_from_display_name(self, display_name: str) -> str | None:
-        """Extract domain from store display name."""
-        prefix = f"{STORE_PREFIX}-"
-        if display_name.startswith(prefix):
-            return display_name[len(prefix):]
-        return None
-
     def get_store(self, domain: str) -> types.FileSearchStore | None:
         """Retrieve a store by domain name by listing all stores (fallback only)."""
         if not self.client:
             return None
 
-        display_name = self._get_store_display_name(domain)
         try:
             for store in self.client.file_search_stores.list():
-                if store.display_name == display_name:
+                if store.display_name == domain:
                     return store
         except Exception as e:
             logger.error(f"Error finding store: {e}")
@@ -120,22 +115,20 @@ class StoreManager:
             description: Optional description for the domain
             
         Returns:
-            The created or exSTORE_PREFIXisting store
+            The created or existing store
         """
         if not self.client:
             raise ValueError("Gemini client not initialized. Check API key.")
 
-        display_name = self._get_store_display_name(domain)
-
         # Check if store already exists
         existing = self.get_store(domain)
         if existing:
-            logger.info(f"Store '{display_name}' already exists")
+            logger.info(f"Store '{domain}' already exists")
             return existing
 
-        # Create new store
+        # Create new store — use domain directly as display_name
         store = self.client.file_search_stores.create(
-            config={"display_name": display_name}
+            config={"display_name": domain}
         )
         logger.info(f"Created new store: {store.name} for domain '{domain}'")
         return store
@@ -146,28 +139,26 @@ class StoreManager:
             return []
 
         stores = []
-        prefix = f"{STORE_PREFIX}-"
 
         try:
             for store in self.client.file_search_stores.list():
-                # Only include stores with our prefix
-                if store.display_name and store.display_name.startswith(prefix):
-                    domain = self._extract_domain_from_display_name(store.display_name)
+                if not store.display_name:
+                    continue
 
-                    # Count documents
-                    doc_count = 0
-                    try:
-                        docs = list(self.client.file_search_stores.documents.list(parent=store.name))
-                        doc_count = len(docs)
-                    except Exception:
-                        pass
+                # Count documents
+                doc_count = 0
+                try:
+                    docs = list(self.client.file_search_stores.documents.list(parent=store.name))
+                    doc_count = len(docs)
+                except Exception:
+                    pass
 
-                    stores.append(StoreInfo(
-                        name=store.name,
-                        display_name=store.display_name,
-                        domain=domain or "",
-                        document_count=doc_count
-                    ))
+                stores.append(StoreInfo(
+                    name=store.name,
+                    display_name=store.display_name,
+                    domain=store.display_name,
+                    document_count=doc_count
+                ))
         except Exception as e:
             logger.error(f"Error listing stores: {e}")
 
@@ -199,6 +190,7 @@ class StoreManager:
         title_override: str | None = None,
         url: str | None = None,
         document_id: str | None = None,
+        custom_metadata: list[dict] | None = None,
     ) -> dict:
         """
         Upload a document to a domain's File Search Store.
@@ -211,6 +203,9 @@ class StoreManager:
             title_override: Use this title instead of extracted title
             url: For website source, canonical URL on aulss9.veneto.it
             document_id: Stable id for attachments (for links in chat response); generated if not set
+            custom_metadata: Optional extra metadata dicts ({"key": ..., "string_value": ...})
+                             appended to the base metadata. Used by the web scraper to attach
+                             topic, source, etc. without changing the base upload contract.
 
         Returns:
             dict with upload status (includes document_id for attachments)
@@ -253,26 +248,41 @@ class StoreManager:
         # Check for and delete existing version (replace duplicate)
         await self._delete_existing(store, file_name)
 
-        # Build custom_metadata: base + source_type and optional url/document_id
-        custom_metadata = [
-            {"key": "title", "string_value": title},
-            {"key": "file_name", "string_value": file_name},
-            {"key": "domain", "string_value": domain},
-            {"key": "abstract", "string_value": metadata.abstract},
-            {"key": "source_type", "string_value": source_type},
+        # Gemini enforces a 256-char limit on every metadata string_value
+        def _mv(v: str) -> str:
+            return v[:256] if v else v
+
+        # Build custom_metadata: base fields + optional url/document_id + caller extras
+        built_metadata = [
+            {"key": "title", "string_value": _mv(title)},
+            {"key": "file_name", "string_value": _mv(file_name)},
+            {"key": "domain", "string_value": _mv(domain)},
+            {"key": "abstract", "string_value": _mv(metadata.abstract)},
+            {"key": "source_type", "string_value": _mv(source_type)},
         ]
         if url:
-            custom_metadata.append({"key": "url", "string_value": url})
+            built_metadata.append({"key": "url", "string_value": _mv(url)})
         if document_id:
-            custom_metadata.append({"key": "document_id", "string_value": document_id})
+            built_metadata.append({"key": "document_id", "string_value": _mv(document_id)})
+        if custom_metadata:
+            built_metadata.extend(
+                {**m, "string_value": _mv(m.get("string_value", "") or "")}
+                for m in custom_metadata
+            )
 
-        # Import to File Search Store with metadata
+        # Import to File Search Store with metadata and chunking config
         operation = self.client.file_search_stores.upload_to_file_search_store(
             file_search_store_name=store.name,
             file=file_path,
             config={
                 "display_name": title,
-                "custom_metadata": custom_metadata,
+                "custom_metadata": built_metadata,
+                "chunking_config": {
+                    "white_space_config": {
+                        "max_tokens_per_chunk": 300,
+                        "max_overlap_tokens": 30,
+                    }
+                },
             },
         )
 
@@ -281,6 +291,7 @@ class StoreManager:
             operation = self.client.operations.get(operation)
 
         logger.info(f"Document '{file_name}' uploaded and indexed to domain '{domain}' (source_type={source_type})")
+        self._invalidate_doc_cache(domain)
 
         result = {
             "success": True,
@@ -318,6 +329,9 @@ class StoreManager:
 
         metadata = response.parsed
         metadata.department = domain
+        # Hard-clamp even if the model ignores the character-limit instruction
+        metadata.title = metadata.title[:256] if metadata.title else metadata.title
+        metadata.abstract = metadata.abstract[:256] if metadata.abstract else metadata.abstract
 
         logger.info(f"Extracted - Title: {metadata.title}")
         return metadata
@@ -346,8 +360,60 @@ class StoreManager:
         except Exception as e:
             logger.warning(f"Error checking for existing docs: {e}")
 
-    async def list_documents(self, domain: str) -> list[dict]:
-        """List all documents in a domain's store."""
+    async def delete_web_scrape_docs(self, domain: str) -> int:
+        """
+        Delete all web-scraped documents from a store.
+        Identifies docs by: source="web_scrape", file_name starting with "web_",
+        or source_type="website" (covers documents uploaded by the old batch scraper).
+        Returns the number of documents deleted.
+        """
+        if not self.client:
+            return 0
+        store = await self.resolve_store(domain)
+        if not store:
+            return 0
+        deleted = 0
+        try:
+            for doc in self.client.file_search_stores.documents.list(parent=store.name):
+                is_web = False
+                if doc.custom_metadata:
+                    for meta in doc.custom_metadata:
+                        k, v = meta.key, (meta.string_value or "")
+                        if (k == "source" and v == "web_scrape") or \
+                           (k == "source_type" and v == "website") or \
+                           (k == "file_name" and v.startswith("web_")):
+                            is_web = True
+                            break
+                if is_web:
+                    try:
+                        self.client.file_search_stores.documents.delete(
+                            name=doc.name, config={"force": True}
+                        )
+                        deleted += 1
+                        await asyncio.sleep(0.5)  # avoid hammering the API
+                    except Exception as e:
+                        logger.warning(f"Could not delete web doc '{doc.name}': {e}")
+        except Exception as e:
+            logger.error(f"Error deleting web scrape docs from '{domain}': {e}")
+        logger.info(f"Deleted {deleted} web-scrape documents from store '{domain}'")
+        if deleted:
+            self._invalidate_doc_cache(domain)
+        return deleted
+
+    def _invalidate_doc_cache(self, domain: str) -> None:
+        """Drop cached doc list for a domain. Called after any write operation."""
+        _DOC_CACHE.pop(domain, None)
+
+    async def _fetch_all_documents(self, domain: str) -> list[dict]:
+        """
+        Fetch every document for a domain from Gemini.
+        Results are cached for _DOC_CACHE_TTL seconds and invalidated on
+        any upload or delete so the cache never returns stale data.
+        """
+        entry = _DOC_CACHE.get(domain)
+        if entry and (time.monotonic() - entry[0]) < _DOC_CACHE_TTL:
+            return entry[1]
+
         if not self.client:
             return []
 
@@ -355,23 +421,65 @@ class StoreManager:
         if not store:
             return []
 
-        documents = []
+        docs: list[dict] = []
         try:
             for doc in self.client.file_search_stores.documents.list(parent=store.name):
-                metadata = {}
+                metadata: dict[str, str] = {}
                 if doc.custom_metadata:
                     for meta in doc.custom_metadata:
                         metadata[meta.key] = meta.string_value
-
-                documents.append({
+                docs.append({
                     "name": doc.name,
                     "display_name": doc.display_name,
-                    "metadata": metadata
+                    "metadata": metadata,
                 })
         except Exception as e:
-            logger.error(f"Error listing documents: {e}")
+            logger.error(f"Error listing documents for '{domain}': {e}")
 
-        return documents
+        _DOC_CACHE[domain] = (time.monotonic(), docs)
+        return docs
+
+    async def list_documents(self, domain: str) -> list[dict]:
+        """List all documents in a domain's store (cached)."""
+        return await self._fetch_all_documents(domain)
+
+    async def list_documents_page(
+        self, domain: str, limit: int = 50, offset: int = 0
+    ) -> dict:
+        """
+        Return a paginated slice of documents for a domain.
+        Response: {"items": [...], "total": N}
+        The full list is cached so subsequent page requests are instant.
+        """
+        all_docs = await self._fetch_all_documents(domain)
+        return {
+            "items": all_docs[offset: offset + limit],
+            "total": len(all_docs),
+        }
+
+    async def get_document_stats(self, domain: str) -> dict:
+        """
+        Return lightweight aggregate counts for a domain — no full list sent over
+        the wire. Used by the admin coverage tiles and content checklist.
+        """
+        all_docs = await self._fetch_all_documents(domain)
+
+        def _fname(d: dict) -> str:
+            return d.get("metadata", {}).get("file_name", "").lower()
+
+        web_count = sum(
+            1 for d in all_docs
+            if _fname(d).startswith("web_") or d.get("metadata", {}).get("source") == "web_scrape"
+        )
+        carta_count = sum(1 for d in all_docs if _fname(d).startswith("carta_servizi_"))
+        return {
+            "total": len(all_docs),
+            "web_count": web_count,
+            "carta_count": carta_count,
+            "attachment_count": len(all_docs) - web_count - carta_count,
+            "has_medico": any("medico" in _fname(d) for d in all_docs),
+            "has_uss9": any("uss9" in _fname(d) for d in all_docs),
+        }
 
     async def delete_document(self, domain: str, doc_name: str) -> bool:
         """Delete a document from a domain's store."""
@@ -388,6 +496,7 @@ class StoreManager:
                 config={"force": True}
             )
             logger.info(f"Deleted document: {doc_name}")
+            self._invalidate_doc_cache(domain)
             return True
         except Exception as e:
             logger.error(f"Error deleting document: {e}")

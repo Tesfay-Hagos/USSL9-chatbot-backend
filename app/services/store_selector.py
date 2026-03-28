@@ -52,8 +52,8 @@ async def select_stores_for_query(
     """
     full_list, valid_ids = _build_store_list(extra_stores)
     if not client or not GEMINI_API_KEY:
-        logger.warning("Store selector: no client or API key, using default general_info")
-        return ["general_info"]
+        logger.warning("Store selector: no client or API key, using default general")
+        return ["general"]
 
     store_list_text = "\n".join(
         f"- {s['id']}: {s['description']}" for s in full_list
@@ -83,15 +83,15 @@ Rispondi SOLO con un JSON valido con chiavi: "stores" (array di id, es. ["hours"
         )
         parsed = response.parsed
         if not parsed or not isinstance(parsed, StoreSelectionOutput):
-            logger.warning("Store selector: invalid parsed response, using general_info")
-            return ["general_info"]
+            logger.warning("Store selector: invalid parsed response, using general")
+            return ["general"]
 
         # Keep only ids that exist in registry
         selected = [s for s in parsed.stores if s in valid_ids]
         if not selected:
-            selected = ["general_info"]
+            selected = ["general"]
         logger.info(f"Store selection: {selected} (reason: {parsed.reason})")
         return selected
     except Exception as e:
         logger.error(f"Store selection failed: {e}", exc_info=True)
-        return ["general_info"]
+        return ["general"]

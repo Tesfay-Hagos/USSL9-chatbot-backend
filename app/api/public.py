@@ -23,6 +23,7 @@ class PublicStoreInfo(BaseModel):
     domain: str
     display_name: str
     description: str = ""
+    is_initial: bool = False
 
 
 async def _ensure_gemini_store(manager: StoreManager, domain: str, description: str) -> None:
@@ -66,6 +67,7 @@ async def list_public_stores():
             domain=r.id,
             display_name=r.display_name,
             description=r.description or "",
+            is_initial=r.is_initial,
         )
         for r in records
     ]

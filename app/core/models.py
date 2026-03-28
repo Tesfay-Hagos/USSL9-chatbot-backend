@@ -15,6 +15,7 @@ from sqlalchemy import (
     String,
     Text,
     func,
+    Index,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -146,3 +147,33 @@ class ChatLogRecord(Base):
 
     def __repr__(self) -> str:
         return f"<ChatLogRecord id={self.id!r} domain={self.domain!r}>"
+
+
+class ScrapedPageRecord(Base):
+    """
+    Persistent manifest of every URL successfully scraped.
+
+    Enables resume-on-restart: a new scrape job loads this set first and
+    skips any URL already present, so only new/missing pages are re-fetched.
+    The content_hash allows detecting stale pages if we want to force-refresh
+    specific URLs in the future.
+    """
+
+    __tablename__ = "scraped_pages"
+
+    url: Mapped[str] = mapped_column(String(2000), primary_key=True)
+    title: Mapped[str | None] = mapped_column(String(500))
+    content_hash: Mapped[str | None] = mapped_column(String(32))   # md5 hex of extracted text
+    char_count: Mapped[int] = mapped_column(Integer, default=0)
+    batch_file: Mapped[str | None] = mapped_column(String(500))    # batch .md filename
+    job_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    scraped_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_scraped_pages_job_id", "job_id"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<ScrapedPageRecord url={self.url!r} job={self.job_id!r}>"

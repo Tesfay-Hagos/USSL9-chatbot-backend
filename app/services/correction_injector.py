@@ -78,7 +78,7 @@ async def inject_correction(
         logger.error("Cannot inject correction: Gemini client not initialised")
         return None
 
-    store = store_manager.get_store(domain)
+    store = await store_manager.resolve_store(domain)
     if not store:
         logger.error(f"Cannot inject correction: store '{domain}' not found in Gemini")
         return None
@@ -95,7 +95,7 @@ async def inject_correction(
     try:
         tmp_path.write_text(doc_content, encoding="utf-8")
 
-        result = await store_manager.upload_document(
+        await store_manager.upload_document(
             file_path=str(tmp_path),
             domain=domain,
             source_type="correction",
@@ -131,7 +131,6 @@ async def inject_correction(
 
 
 async def remove_injection(
-    gemini_doc_name: str,
     domain: str,
     correction_id: str,
 ) -> bool:

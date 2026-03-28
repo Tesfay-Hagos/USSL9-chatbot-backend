@@ -130,7 +130,6 @@ async def update_correction(
     # If deactivating, remove injection
     if is_active is False and current.gemini_doc_name:
         await remove_injection(
-            gemini_doc_name=current.gemini_doc_name,
             domain=current.domain,
             correction_id=correction_id,
         )
@@ -150,7 +149,6 @@ async def update_correction(
         # Remove old injection first
         if current.gemini_doc_name:
             await remove_injection(
-                gemini_doc_name=current.gemini_doc_name,
                 domain=current.domain,
                 correction_id=correction_id,
             )
@@ -191,7 +189,6 @@ async def delete_correction(correction_id: str) -> bool:
     # Remove from Gemini if injected
     if record.gemini_doc_name:
         await remove_injection(
-            gemini_doc_name=record.gemini_doc_name,
             domain=record.domain,
             correction_id=correction_id,
         )

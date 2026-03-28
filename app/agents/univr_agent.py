@@ -12,7 +12,7 @@ import logging
 from google import genai
 from google.genai import types
 
-from app.config import GEMINI_API_KEY, MODEL, STORE_PREFIX
+from app.config import GEMINI_API_KEY, MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -87,10 +87,9 @@ class UniVRAgent:
         """Retrieve a File Search Store by domain (store id)."""
         if not self.client:
             return None
-        display_name = f"{STORE_PREFIX}-{domain}"
         try:
             for store in self.client.file_search_stores.list():
-                if store.display_name == display_name:
+                if store.display_name == domain:
                     return store
         except Exception as e:
             logger.error(f"Error listing stores: {e}")

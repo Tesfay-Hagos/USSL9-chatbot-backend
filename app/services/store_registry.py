@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import delete, select, update
 
-from app.config import STORE_PREFIX, ULSS9_STORES
+from app.config import ULSS9_STORES
 from app.core.database import get_db
 from app.core.models import DocumentRecord, StoreRecord
 
@@ -22,14 +22,14 @@ logger = logging.getLogger(__name__)
 
 
 async def seed_initial_stores() -> None:
-    """Seed the four Allegato A stores if they don't exist yet."""
+    """Seed the initial public store if it doesn't exist yet."""
     async with get_db() as db:
         for store_def in ULSS9_STORES:
             existing = await db.get(StoreRecord, store_def["id"])
             if not existing:
                 record = StoreRecord(
                     id=store_def["id"],
-                    display_name=f"{STORE_PREFIX}-{store_def['id']}",
+                    display_name=store_def.get("display_name", store_def["id"]),
                     description=store_def.get("description", ""),
                     is_initial=True,
                     is_public=True,
