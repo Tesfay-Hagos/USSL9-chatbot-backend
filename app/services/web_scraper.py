@@ -15,6 +15,7 @@ Robots.txt rules respected:
 import asyncio
 import hashlib
 import logging
+import os
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -367,6 +368,29 @@ async def run_scrape_job(job_id: str, max_pages: int | None = None, target_store
         await upload_queue.put((url, title, text, topic, content_hash))
         job.scraped += 1
 
+    # ── Keep-alive ping (prevents Render free-tier sleep) ─────────────────────
+    async def keep_alive() -> None:
+        """
+        Ping our own health endpoint every 8 minutes so Render's load balancer
+        sees incoming traffic and doesn't spin down the server mid-scrape.
+        Uses RENDER_EXTERNAL_URL (set automatically by Render) — no-op in local dev.
+        """
+        base = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
+        if not base:
+            return  # not on Render — skip
+        ping_url = f"{base}/health"
+        import httpx as _httpx
+        while not job.cancelled and job.status == "running":
+            await asyncio.sleep(8 * 60)  # 8 minutes
+            if job.status != "running":
+                break
+            try:
+                async with _httpx.AsyncClient(timeout=10) as _c:
+                    await _c.get(ping_url)
+                logger.debug(f"[{job_id}] Keep-alive ping sent to {ping_url}")
+            except Exception:
+                pass  # best-effort
+
     try:
         # 0. Load resume manifest — set of already-scraped URLs
         logger.info(f"[{job_id}] Loading scrape manifest for resume check…")
@@ -394,8 +418,9 @@ async def run_scrape_job(job_id: str, max_pages: int | None = None, target_store
             job.total_urls = len(urls)
             logger.info(f"[{job_id}] {len(urls)} URLs to process (MAX_CONCURRENT={MAX_CONCURRENT})")
 
-            # 2. Start upload worker
+            # 2. Start upload worker + keep-alive ping
             worker_task = asyncio.create_task(upload_worker())
+            keepalive_task = asyncio.create_task(keep_alive())
 
             # 3. Crawl all URLs concurrently (semaphore limits parallelism)
             crawl_tasks = [crawl_one(url, client) for url in urls]
@@ -404,6 +429,7 @@ async def run_scrape_job(job_id: str, max_pages: int | None = None, target_store
         # 4. Signal upload worker to finish and wait for queue to drain
         await upload_queue.put(None)
         await worker_task
+        keepalive_task.cancel()
 
         job.status = "done" if not job.cancelled else "cancelled"
 
@@ -411,9 +437,12 @@ async def run_scrape_job(job_id: str, max_pages: int | None = None, target_store
         logger.error(f"[{job_id}] Fatal scrape error: {e}", exc_info=True)
         job.status = "error"
         job.errors.append(str(e))
-        # Ensure worker exits on fatal error
         try:
             upload_queue.put_nowait(None)
+        except Exception:
+            pass
+        try:
+            keepalive_task.cancel()
         except Exception:
             pass
     finally:
