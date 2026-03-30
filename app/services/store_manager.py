@@ -248,9 +248,12 @@ class StoreManager:
         # Check for and delete existing version (replace duplicate)
         await self._delete_existing(store, file_name)
 
-        # Gemini enforces a 256-char limit on every metadata string_value
-        def _mv(v: str) -> str:
-            return v[:256] if v else v
+        # Gemini enforces a 256-char limit on every metadata string_value.
+        # Use 200 to stay safely under the limit and handle None/non-string values.
+        def _mv(v) -> str:
+            if not v:
+                return ""
+            return str(v)[:200]
 
         # Build custom_metadata: base fields + optional url/document_id + caller extras
         built_metadata = [

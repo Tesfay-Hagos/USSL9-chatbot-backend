@@ -5,8 +5,11 @@ Manage File Search Stores (domains) and documents.
 Audit logging for GDPR / government compliance.
 """
 
+import asyncio
 import logging
 import uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
@@ -32,6 +35,23 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 # Temp directory for URL preview files (cleaned up after upload or cancel)
 TEMP_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "temp"
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
+
+# ── CartaServizi bulk sync job tracker ────────────────────────────────────────
+
+@dataclass
+class BulkSyncJob:
+    job_id: str
+    domain: str
+    status: str = "running"          # running | done | error
+    total: int = 0
+    synced: int = 0
+    failed: int = 0
+    errors: list[str] = field(default_factory=list)
+    started_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    finished_at: str | None = None
+
+
+_bulk_sync_jobs: dict[str, BulkSyncJob] = {}
 
 
 # ============ Schemas ============
@@ -949,33 +969,25 @@ async def sync_carta_servizi(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/stores/{domain}/sync-api-bulk")
-async def sync_carta_servizi_bulk(
-    domain: str,
-    request: Request,
-    username: str = Depends(require_admin),
-):
-    """
-    Bulk sync: fetches elenco_servizi to discover all carta IDs, then fetches and
-    indexes each carta individually via servizi_carta. This captures the rich HTML
-    content (descrizione, come accedere, ubicazione, etc.) rather than the flat list.
-    """
-    import asyncio
+async def _run_bulk_sync(job_id: str, domain: str) -> None:
+    """Background coroutine for CartaServizi bulk sync."""
     import re
-
     import httpx
+
+    job = _bulk_sync_jobs[job_id]
+    store_manager = StoreManager()
 
     try:
         token = await _get_carta_servizi_token()
 
-        # Step 1 — get the full service list to extract unique carta (idpadre) values
+        # Step 1 — discover all carta IDs from elenco_servizi
         elenco_url = _build_carta_url("elenco_servizi", None)
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.get(elenco_url, headers={"Authorization": f"Bearer {token}"})
             resp.raise_for_status()
 
         elenco = resp.json()
-        carta_ids: set[str] = set()
+        carta_ids: list[str] = []
 
         if isinstance(elenco, dict) and "columns" in elenco and "data" in elenco:
             cols = elenco["columns"]
@@ -983,21 +995,22 @@ async def sync_carta_servizi_bulk(
             try:
                 idx_idpadre = cols.index("idpadre")
             except ValueError:
-                raise HTTPException(status_code=422, detail="elenco_servizi missing 'idpadre' column")
+                raise ValueError("elenco_servizi missing 'idpadre' column")
+            seen: set[str] = set()
             for row in rows:
                 val = row[idx_idpadre]
-                if val is not None and str(val).strip():
-                    carta_ids.add(str(val))
+                if val is not None and str(val).strip() and str(val) not in seen:
+                    seen.add(str(val))
+                    carta_ids.append(str(val))
 
         if not carta_ids:
-            raise HTTPException(status_code=422, detail="No carta IDs found in elenco_servizi response")
+            raise ValueError("No carta IDs found in elenco_servizi response")
 
-        # Step 2 — fetch and index each carta individually
-        store_manager = StoreManager()
-        synced: list[dict] = []
-        failed: list[dict] = []
+        job.total = len(carta_ids)
+        logger.info(f"[bulk_sync:{job_id}] {job.total} cartas to sync for domain '{domain}'")
 
-        for carta_id in sorted(carta_ids):
+        # Step 2 — fetch and upload each carta
+        for carta_id in carta_ids:
             try:
                 carta_url = _build_carta_url("servizi_carta", carta_id)
                 async with httpx.AsyncClient(timeout=30) as client:
@@ -1012,38 +1025,77 @@ async def sync_carta_servizi_bulk(
                 file_path = DATA_DIR / filename
                 file_path.write_text(markdown_content, encoding="utf-8")
 
-                result = await store_manager.upload_document(
+                await store_manager.upload_document(
                     str(file_path), domain, source_type="api", title_override=title, url=carta_url
                 )
-                synced.append({"carta_id": carta_id, "title": title, "document_id": result.get("document_id")})
-                logger.info(f"CartaServizi bulk: synced carta {carta_id} — {title}")
+                job.synced += 1
+                logger.info(f"[bulk_sync:{job_id}] synced carta {carta_id} ({job.synced}/{job.total})")
             except Exception as e:
-                failed.append({"carta_id": carta_id, "error": str(e)})
-                logger.warning(f"CartaServizi bulk: carta {carta_id} failed — {e}")
+                job.failed += 1
+                job.errors.append(f"carta {carta_id}: {e}")
+                logger.warning(f"[bulk_sync:{job_id}] carta {carta_id} failed — {e}")
 
-            # Polite delay between requests
             await asyncio.sleep(0.25)
 
-        log_admin_action(
-            username, "sync_carta_servizi_bulk", resource=domain,
-            details={"total": len(carta_ids), "synced": len(synced), "failed": len(failed)},
-            ip=get_client_ip(request), correlation_id=getattr(request.state, "correlation_id", None),
-        )
-        return {
-            "success": True,
-            "domain": domain,
-            "total_cartas": len(carta_ids),
-            "synced": len(synced),
-            "failed": len(failed),
-            "details": synced,
-            "errors": failed,
-        }
+        job.status = "done"
 
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"CartaServizi bulk sync error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"[bulk_sync:{job_id}] Fatal error: {e}", exc_info=True)
+        job.status = "error"
+        job.errors.append(str(e))
+    finally:
+        job.finished_at = datetime.now(timezone.utc).isoformat()
+        logger.info(
+            f"[bulk_sync:{job_id}] Finished — status={job.status} "
+            f"synced={job.synced} failed={job.failed} total={job.total}"
+        )
+
+
+@router.post("/stores/{domain}/sync-api-bulk")
+async def sync_carta_servizi_bulk(
+    domain: str,
+    request: Request,
+    username: str = Depends(require_admin),
+):
+    """
+    Start a background CartaServizi bulk sync job.
+    Fetches elenco_servizi to discover all carta IDs, then fetches and
+    uploads each carta individually. Returns immediately with a job_id
+    — poll GET /stores/{domain}/sync-api-bulk/{job_id} for progress.
+    """
+    job_id = uuid.uuid4().hex[:12]
+    job = BulkSyncJob(job_id=job_id, domain=domain)
+    _bulk_sync_jobs[job_id] = job
+    asyncio.create_task(_run_bulk_sync(job_id, domain))
+    log_admin_action(
+        username, "sync_carta_servizi_bulk_start", resource=domain,
+        details={"job_id": job_id},
+        ip=get_client_ip(request), correlation_id=getattr(request.state, "correlation_id", None),
+    )
+    return {"job_id": job_id, "status": "running", "domain": domain}
+
+
+@router.get("/stores/{domain}/sync-api-bulk/{job_id}")
+async def get_bulk_sync_status(
+    domain: str,
+    job_id: str,
+    username: str = Depends(require_admin),
+):
+    """Poll the status of a running or completed CartaServizi bulk sync job."""
+    job = _bulk_sync_jobs.get(job_id)
+    if not job or job.domain != domain:
+        raise HTTPException(status_code=404, detail="Bulk sync job not found")
+    return {
+        "job_id": job.job_id,
+        "status": job.status,
+        "domain": job.domain,
+        "total": job.total,
+        "synced": job.synced,
+        "failed": job.failed,
+        "errors": job.errors[-10:],   # last 10 only to keep response small
+        "started_at": job.started_at,
+        "finished_at": job.finished_at,
+    }
 
 
 @router.get("/stores/{domain}/documents/stats", response_model=DocumentStats)

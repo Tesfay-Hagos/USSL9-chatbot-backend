@@ -300,7 +300,7 @@ async def run_scrape_job(job_id: str, max_pages: int | None = None, target_store
                 upload_queue.task_done()
                 break
 
-            url, title, text, topic, content_hash = item
+            url, title, text, topic, _ = item
             filename = _page_filename(title, url)
             file_path = DATA_DIR / filename
             file_path.write_text(_page_markdown(url, title, text), encoding="utf-8")
@@ -320,23 +320,15 @@ async def run_scrape_job(job_id: str, max_pages: int | None = None, target_store
                 job.uploaded += 1
                 job.store_counts[topic] = job.store_counts.get(topic, 0) + 1
                 logger.info(f"[{job_id}] Uploaded {filename} → {target_store} [{topic}]")
+                # Update the manifest row with the filename now that upload succeeded
+                try:
+                    await scrape_manifest.update_batch_file([url], filename)
+                except Exception as me:
+                    logger.warning(f"[{job_id}] Manifest batch_file update failed for {url}: {me}")
             except Exception as e:
                 err = f"Upload failed for {filename}: {e}"
                 logger.error(f"[{job_id}] {err}")
                 job.errors.append(err)
-
-            # Record to manifest regardless of upload success (content was extracted)
-            try:
-                await scrape_manifest.record_scraped_page(
-                    url=url,
-                    title=title,
-                    content_hash=content_hash,
-                    char_count=len(text),
-                    batch_file=filename,
-                    job_id=job_id,
-                )
-            except Exception as me:
-                logger.warning(f"[{job_id}] Manifest record failed for {url}: {me}")
 
             upload_queue.task_done()
 
@@ -365,6 +357,22 @@ async def run_scrape_job(job_id: str, max_pages: int | None = None, target_store
         title, text = result
         topic = classify_topic(text)
         content_hash = hashlib.md5(text.encode()).hexdigest()
+
+        # Record to manifest immediately after scraping so that if the server
+        # is killed before the upload queue drains, these URLs are not re-scraped
+        # on the next run.  Upload status is tracked separately via job.uploaded.
+        try:
+            await scrape_manifest.record_scraped_page(
+                url=url,
+                title=title,
+                content_hash=content_hash,
+                char_count=len(text),
+                batch_file=None,          # filled in by upload_worker once uploaded
+                job_id=job_id,
+            )
+        except Exception as me:
+            logger.warning(f"[{job_id}] Manifest record failed for {url}: {me}")
+
         await upload_queue.put((url, title, text, topic, content_hash))
         job.scraped += 1
 
